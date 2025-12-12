@@ -1,0 +1,6 @@
+Title: Sample Title
+Author: Alice Example
+Date: 2025-01-01
+
+This is the first paragraph of the article.
+This is the second paragraph.
