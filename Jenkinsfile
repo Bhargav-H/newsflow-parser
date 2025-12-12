@@ -9,7 +9,6 @@ pipeline {
         LINT_REPORT = "reports/lint"
         ARTIFACT_DIR = "artifacts"
         REMOTE_LOG_DIR = "/tmp/newsflow-logs"
-        // Timestamp for versioned artifact filenames
         TIMESTAMP = "${new Date().format('yyyyMMdd-HHmmss')}"
     }
 
@@ -35,19 +34,19 @@ pipeline {
                         echo "python3 found: $(python3 --version)"
                     fi
 
-                    echo "Checking out source code"
-
+                    echo "Creating virtual environment"
                     ${PYTHON} -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
 
                     if [ -f "${REQUIREMENTS}" ]; then
                         pip install --upgrade pip
                         pip install -r ${REQUIREMENTS}
-                    else
-                        echo "No requirements.txt found. Continuing."
                     fi
 
-                    mkdir -p ${TEST_REPORT_DIR} ${LINT_REPORT} ${ARTIFACT_DIR}
+                    # Ensure required directories exist
+                    mkdir -p ${TEST_REPORT_DIR}
+                    mkdir -p ${LINT_REPORT}
+                    mkdir -p ${ARTIFACT_DIR}
                 '''
             }
         }
@@ -77,18 +76,17 @@ pipeline {
                     . ${VENV_DIR}/bin/activate
                     export PYTHONPATH="$PWD"
 
-                    # Run flake8
+                    mkdir -p ${LINT_REPORT}
+                    mkdir -p ${ARTIFACT_DIR}
+
                     if command -v flake8 >/dev/null 2>&1; then
-                        mkdir -p ${LINT_REPORT}
-                        flake8 . --format=default > ${LINT_REPORT}/flake8.txt || true
-                    else
-                        echo "flake8 not installed; skipping lint"
+                        flake8 . > ${LINT_REPORT}/flake8.txt || true
                     fi
 
-                    # Smoke test with TIMESTAMPED filename
+                    # Smoke test → ensure artifacts folder exists before writing
                     if [ -f tests/fixtures/sample_article.txt ]; then
                         python tools/parse_article.py tests/fixtures/sample_article.txt \
-                            > ${ARTIFACT_DIR}/smoke_output-${TIMESTAMP}.json || true
+                            > ${ARTIFACT_DIR}/smoke_output-${TIMESTAMP}.json
                     else
                         echo "{}" > ${ARTIFACT_DIR}/smoke_output-${TIMESTAMP}.json
                     fi
@@ -100,25 +98,26 @@ pipeline {
 
         stage('archive') {
             steps {
-                echo "4. Archiving parser outputs and copying logs to ${REMOTE_LOG_DIR}"
+                echo "4. Archiving full-run outputs + copying logs"
 
                 sh '''
                     set -e
                     . ${VENV_DIR}/bin/activate
                     export PYTHONPATH="$PWD"
 
+                    # Ensure directories exist (THIS FIXES YOUR ERROR)
+                    mkdir -p ${ARTIFACT_DIR}
                     mkdir -p ${ARTIFACT_DIR}/full_run
 
-                    # Timestamped filenames for full-run parsing
+                    # Full-run timestamped artifacts
                     if [ -d examples/input_articles ]; then
                         for f in examples/input_articles/*; do
                             fname=$(basename "$f")
                             python tools/parse_article.py "$f" \
-                                > ${ARTIFACT_DIR}/full_run/${fname}-${TIMESTAMP}.json || true
+                                > ${ARTIFACT_DIR}/full_run/${fname}-${TIMESTAMP}.json
                         done
                     fi
 
-                    # Copy logs to /tmp/newsflow-logs
                     mkdir -p ${REMOTE_LOG_DIR}
                     chmod 0775 ${REMOTE_LOG_DIR} || true
 
@@ -127,29 +126,25 @@ pipeline {
                     cp -r ${ARTIFACT_DIR} ${REMOTE_LOG_DIR}/ || true
 
                     echo "Newsflow logs for build ${BUILD_NUMBER} - $(date -u)" \
-                        > ${REMOTE_LOG_DIR}/BUILD_INFO.txt || true
+                        > ${REMOTE_LOG_DIR}/BUILD_INFO.txt
                 '''
 
-                archiveArtifacts artifacts: "${ARTIFACT_DIR}/**", fingerprint: true, allowEmptyArchive: true
-                stash includes: "${ARTIFACT_DIR}/**", name: "parser-artifacts", allowEmpty: true
+                archiveArtifacts artifacts: "${ARTIFACT_DIR}/**", fingerprint: true
+                stash includes: "${ARTIFACT_DIR}/**", name: "parser-artifacts"
             }
         }
     }
 
     post {
         always {
-            echo "Cleaning workspace (but leaving ${REMOTE_LOG_DIR} intact)"
+            echo "Cleaning workspace..."
             sh '''
                 set +e
                 rm -rf ${VENV_DIR}
             '''
             cleanWs()
         }
-        success {
-            echo "Pipeline succeeded."
-        }
-        failure {
-            echo "Pipeline failed. Check logs and reports."
-        }
+        success { echo "Pipeline succeeded." }
+        failure { echo "Pipeline failed." }
     }
 }
