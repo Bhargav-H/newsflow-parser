@@ -8,7 +8,9 @@ pipeline {
         TEST_REPORT_DIR = "reports/tests"
         LINT_REPORT = "reports/lint"
         ARTIFACT_DIR = "artifacts"
-        REMOTE_LOG_DIR = "/tmp/newsflow-logs"   // where logs will be copied on the agent
+        REMOTE_LOG_DIR = "/tmp/newsflow-logs"
+        // Timestamp for versioned artifact filenames
+        TIMESTAMP = "${new Date().format('yyyyMMdd-HHmmss')}"
     }
 
     options {
@@ -35,11 +37,9 @@ pipeline {
 
                     echo "Checking out source code"
 
-                    # Create virtual environment
                     ${PYTHON} -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
 
-                    # Install requirements
                     if [ -f "${REQUIREMENTS}" ]; then
                         pip install --upgrade pip
                         pip install -r ${REQUIREMENTS}
@@ -59,11 +59,8 @@ pipeline {
                 sh '''
                     set -e
                     . ${VENV_DIR}/bin/activate
-
-                    # Add project root to PYTHONPATH so imports work
                     export PYTHONPATH="$PWD"
 
-                    # Run tests and save XML output for Jenkins
                     pytest --junitxml=${TEST_REPORT_DIR}/results.xml || true
                 '''
 
@@ -88,12 +85,12 @@ pipeline {
                         echo "flake8 not installed; skipping lint"
                     fi
 
-                    # Smoke test on sample fixture
+                    # Smoke test with TIMESTAMPED filename
                     if [ -f tests/fixtures/sample_article.txt ]; then
                         python tools/parse_article.py tests/fixtures/sample_article.txt \
-                            > ${ARTIFACT_DIR}/smoke_output.json || true
+                            > ${ARTIFACT_DIR}/smoke_output-${TIMESTAMP}.json || true
                     else
-                        echo "{}" > ${ARTIFACT_DIR}/smoke_output.json
+                        echo "{}" > ${ARTIFACT_DIR}/smoke_output-${TIMESTAMP}.json
                     fi
                 '''
 
@@ -112,19 +109,19 @@ pipeline {
 
                     mkdir -p ${ARTIFACT_DIR}/full_run
 
-                    # Run parser on all example articles
+                    # Timestamped filenames for full-run parsing
                     if [ -d examples/input_articles ]; then
                         for f in examples/input_articles/*; do
                             fname=$(basename "$f")
-                            python tools/parse_article.py "$f" > ${ARTIFACT_DIR}/full_run/${fname}.json || true
+                            python tools/parse_article.py "$f" \
+                                > ${ARTIFACT_DIR}/full_run/${fname}-${TIMESTAMP}.json || true
                         done
                     fi
 
-                    # Create remote log directory
+                    # Copy logs to /tmp/newsflow-logs
                     mkdir -p ${REMOTE_LOG_DIR}
                     chmod 0775 ${REMOTE_LOG_DIR} || true
 
-                    # Copy reports + artifacts to /tmp/newsflow-logs
                     cp -r ${TEST_REPORT_DIR} ${REMOTE_LOG_DIR}/ || true
                     cp -r ${LINT_REPORT} ${REMOTE_LOG_DIR}/ || true
                     cp -r ${ARTIFACT_DIR} ${REMOTE_LOG_DIR}/ || true
@@ -141,7 +138,7 @@ pipeline {
 
     post {
         always {
-            echo "Cleaning workspace (but leaving ${REMOTE_LOG_DIR} intact for inspection)"
+            echo "Cleaning workspace (but leaving ${REMOTE_LOG_DIR} intact)"
             sh '''
                 set +e
                 rm -rf ${VENV_DIR}
