@@ -33,14 +33,13 @@ pipeline {
                         echo "python3 found: $(python3 --version)"
                     fi
 
-                    # Checkout repo (Jenkins does this automatically in many setups)
                     echo "Checking out source code"
 
                     # Create virtual environment
                     ${PYTHON} -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
 
-                    # Install requirements if they exist
+                    # Install requirements
                     if [ -f "${REQUIREMENTS}" ]; then
                         pip install --upgrade pip
                         pip install -r ${REQUIREMENTS}
@@ -61,11 +60,13 @@ pipeline {
                     set -e
                     . ${VENV_DIR}/bin/activate
 
-                    # Run tests and save JUnit XML for Jenkins (don't fail pipeline before junit step)
+                    # Add project root to PYTHONPATH so imports work
+                    export PYTHONPATH="$PWD"
+
+                    # Run tests and save XML output for Jenkins
                     pytest --junitxml=${TEST_REPORT_DIR}/results.xml || true
                 '''
 
-                // Publish test results to Jenkins
                 junit allowEmptyResults: true, testResults: "${TEST_REPORT_DIR}/results.xml"
             }
         }
@@ -77,8 +78,9 @@ pipeline {
                 sh '''
                     set -e
                     . ${VENV_DIR}/bin/activate
+                    export PYTHONPATH="$PWD"
 
-                    # Run linter if available (save output)
+                    # Run flake8
                     if command -v flake8 >/dev/null 2>&1; then
                         mkdir -p ${LINT_REPORT}
                         flake8 . --format=default > ${LINT_REPORT}/flake8.txt || true
@@ -86,7 +88,7 @@ pipeline {
                         echo "flake8 not installed; skipping lint"
                     fi
 
-                    # Smoke test: run parser on sample fixture and save output
+                    # Smoke test on sample fixture
                     if [ -f tests/fixtures/sample_article.txt ]; then
                         python tools/parse_article.py tests/fixtures/sample_article.txt \
                             > ${ARTIFACT_DIR}/smoke_output.json || true
@@ -95,7 +97,6 @@ pipeline {
                     fi
                 '''
 
-                // Archive lint report so it's downloadable
                 archiveArtifacts artifacts: "${LINT_REPORT}/**", allowEmptyArchive: true
             }
         }
@@ -107,11 +108,11 @@ pipeline {
                 sh '''
                     set -e
                     . ${VENV_DIR}/bin/activate
+                    export PYTHONPATH="$PWD"
 
-                    # Ensure artifact output exists
                     mkdir -p ${ARTIFACT_DIR}/full_run
 
-                    # Example: run parser on sample dataset if available and save outputs
+                    # Run parser on all example articles
                     if [ -d examples/input_articles ]; then
                         for f in examples/input_articles/*; do
                             fname=$(basename "$f")
@@ -119,24 +120,20 @@ pipeline {
                         done
                     fi
 
-                    # Ensure the remote log directory exists on the agent and is writable
+                    # Create remote log directory
                     mkdir -p ${REMOTE_LOG_DIR}
                     chmod 0775 ${REMOTE_LOG_DIR} || true
 
-                    # Copy important logs and reports to /tmp/newsflow-logs
-                    # We copy test reports, lint reports, and parser artifacts
+                    # Copy reports + artifacts to /tmp/newsflow-logs
                     cp -r ${TEST_REPORT_DIR} ${REMOTE_LOG_DIR}/ || true
                     cp -r ${LINT_REPORT} ${REMOTE_LOG_DIR}/ || true
                     cp -r ${ARTIFACT_DIR} ${REMOTE_LOG_DIR}/ || true
 
-                    # Optionally create a small README inside the remote log dir
-                    echo "Newsflow logs for build ${BUILD_NUMBER} - $(date -u)" > ${REMOTE_LOG_DIR}/BUILD_INFO.txt || true
+                    echo "Newsflow logs for build ${BUILD_NUMBER} - $(date -u)" \
+                        > ${REMOTE_LOG_DIR}/BUILD_INFO.txt || true
                 '''
 
-                // Archive artifacts as before (keeps them attached to the Jenkins build)
                 archiveArtifacts artifacts: "${ARTIFACT_DIR}/**", fingerprint: true, allowEmptyArchive: true
-
-                // Stash artifacts for downstream jobs if needed
                 stash includes: "${ARTIFACT_DIR}/**", name: "parser-artifacts", allowEmpty: true
             }
         }
